@@ -40,26 +40,29 @@ jobs:
           mkdir -p clang
           wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2024/clang-r510928.tar.gz | tar -xzf - -C clang
 
-      - name: 7. 导入原厂基因图谱并对齐关键 KMI 开关
+      - name: 7. 导入原厂基因图谱并剥离本地私有路径依赖
         run: |
           mkdir -p kernel/out
-          # 直接将你手机原厂的 warsaw_stock.config 作为初始 .config
           cp repo_files/warsaw_stock.config kernel/out/.config
 
           cd kernel
           export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
 
-          # 关闭 cloud-build 环境下会导致链接报错的 BTF 调试信息和 Clang 警告拦截，其余 100% 保持原厂状态
+          # 1. 剥离原厂配置中指向本地私钥/证书/白名单的路径 (纯净源码树中不存在这些外部文件)
           ./scripts/config --file out/.config \
+            --set-str MODULE_SIG_KEY "" \
+            --set-str SYSTEM_TRUSTED_KEYS "" \
+            --set-str SYSTEM_REVOCATION_KEYS "" \
+            -d TRIM_UNUSED_KSYMS \
             -d DEBUG_INFO_BTF \
             -d DEBUG_INFO_BTF_MODULES \
             -d WERROR \
             --set-str LOCALVERSION "-android15-8-g0908354dac1b-ab16143355-4k"
 
-          # 让内核配置系统自动校准当前源码树的配置依赖
+          # 2. 让内核配置系统自动校准当前源码树的配置依赖
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-      - name: 8. 编译纯净内核镜像 (Image)
+      - name: 8. 编译纯净内核镜像 (Image) 并捕获精准报错
         working-directory: kernel
         run: |
           export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
@@ -68,10 +71,15 @@ jobs:
           ccache -z
 
           touch .scmversion
-          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+          set -o pipefail
+          if ! make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CC="ccache clang" CROSS_COMPILE=aarch64-linux-gnu- \
             KCFLAGS="-Wno-error" \
-            Image
+            Image 2>&1 | tee build.log; then
+            echo "================ 真正报错原因汇总 ================"
+            grep -iE "error:|No rule to make target|fatal:" build.log | tail -n 30
+            exit 1
+          fi
 
           ccache -s
 
