@@ -83,11 +83,20 @@ jobs:
 
           ccache -s
 
-      - name: 9. 打包为支持 App 沙盒刷入的 AnyKernel3 刷机包
+      - name: 9. 打包为纯 64 位 AnyKernel3 刷机包 (适配 K90U 纯 64 位硬件)
         run: |
-          git clone --depth=1 https://github.com/ShirkNeko/AnyKernel3.git -b master AnyKernel3 || \
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           rm -rf AnyKernel3/.git
+
+          # 关键修复：下载纯 64 位 (arm64) 静态编译的 busybox 替换 AK3 默认的 32 位 busybox
+          wget -q http://deb.debian.org/debian/pool/main/b/busybox/busybox-static_1.36.1-9+b4_arm64.deb -O busybox.deb || \
+          wget -q http://ftp.debian.org/debian/pool/main/b/busybox/busybox-static_1.35.0-4+b3_arm64.deb -O busybox.deb
+          dpkg-deb -x busybox.deb busybox_extract
+          cp busybox_extract/bin/busybox AnyKernel3/tools/busybox
+          chmod 755 AnyKernel3/tools/busybox
+
+          # 验证确保 busybox 已经是 64-bit ARM aarch64
+          file AnyKernel3/tools/busybox
 
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/
 
