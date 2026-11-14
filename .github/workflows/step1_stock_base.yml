@@ -87,12 +87,10 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           rm -rf AnyKernel3/.git
 
-          # 直接通过 Ubuntu 官方 apt 源下载纯 64 位 (arm64) 静态编译的 busybox
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          apt-get download busybox-static:arm64
-          dpkg-deb -x busybox-static*.deb busybox_extract
-          cp busybox_extract/bin/busybox AnyKernel3/tools/busybox
+          # 直接从 BusyBox 官方及稳定镜像下载纯 64 位 (aarch64) 静态编译二进制文件
+          curl -fsSL "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" -o /dev/null || true
+          wget -qO AnyKernel3/tools/busybox "https://github.com/EXALAB/Busybox-static/raw/main/busybox_arm64" || \
+          wget -qO AnyKernel3/tools/busybox "https://github.com/Magisk-Modules-Repo/busybox-ndk/raw/master/busybox-arm64"
           chmod 755 AnyKernel3/tools/busybox
 
           # 验证确保 busybox 已经是 64-bit ARM aarch64
@@ -106,6 +104,7 @@ jobs:
 
           cd AnyKernel3
           zip -r9 ../Step1-Pure-K90U-6.6-AK3.zip * -x .git README.md *placeholder
+
 
       - name: 10. 上传第 1 课成品包
         uses: actions/upload-artifact@v4
