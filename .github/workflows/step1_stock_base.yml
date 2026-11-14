@@ -1,0 +1,97 @@
+name: Step 1 - Pure Stock-Compatible Kernel (K90U)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-pure-kernel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 1. 清理云端磁盘空间 (为源码和编译产物留足 50GB 空间)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: 2. 安装 Linux 内核编译基础工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev \
+            python3 git curl wget zip unzip ccache gawk lz4 zstd
+
+      - name: 3. 拉取你仓库里的原厂配置 (warsaw_stock.config)
+        uses: actions/checkout@v4
+        with:
+          path: repo_files
+
+      - name: 4. 挂载 ccache 编译缓存 (以后每次编译只需 3-5 分钟)
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: k90u-pure-ccache-${{ github.run_id }}
+          restore-keys: |
+            k90u-pure-ccache-
+
+      - name: 5. 拉取纯净的 Google 官方 android15-6.6 内核源码
+        run: |
+          git clone --depth=1 https://android.googlesource.com/kernel/common -b android15-6.6 kernel
+
+      - name: 6. 下载 Google 官方 AOSP Clang 编译器 (clang-r510928)
+        run: |
+          mkdir -p clang
+          wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2024/clang-r510928.tar.gz | tar -xzf - -C clang
+
+      - name: 7. 导入原厂基因图谱并对齐关键 KMI 开关
+        run: |
+          mkdir -p kernel/out
+          # 直接将你手机原厂的 warsaw_stock.config 作为初始 .config
+          cp repo_files/warsaw_stock.config kernel/out/.config
+
+          cd kernel
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+
+          # 关闭 cloud-build 环境下会导致链接报错的 BTF 调试信息和 Clang 警告拦截，其余 100% 保持原厂状态
+          ./scripts/config --file out/.config \
+            -d DEBUG_INFO_BTF \
+            -d DEBUG_INFO_BTF_MODULES \
+            -d WERROR \
+            --set-str LOCALVERSION "-android15-8-g0908354dac1b-ab16143355-4k"
+
+          # 让内核配置系统自动校准当前源码树的配置依赖
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+      - name: 8. 编译纯净内核镜像 (Image)
+        working-directory: kernel
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+          export CCACHE_DIR="${HOME}/.ccache"
+          ccache -M 5G
+          ccache -z
+
+          touch .scmversion
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC="ccache clang" CROSS_COMPILE=aarch64-linux-gnu- \
+            KCFLAGS="-Wno-error" \
+            Image
+
+          ccache -s
+
+      - name: 9. 打包为支持 App 沙盒刷入的 AnyKernel3 刷机包
+        run: |
+          git clone --depth=1 https://github.com/ShirkNeko/AnyKernel3.git -b master AnyKernel3 || \
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          rm -rf AnyKernel3/.git
+
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's|BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|BLOCK=auto;|g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=1;/g' AnyKernel3/anykernel.sh
+
+          cd AnyKernel3
+          zip -r9 ../Step1-Pure-K90U-6.6-AK3.zip * -x .git README.md *placeholder
+
+      - name: 10. 上传第 1 课成品包
+        uses: actions/upload-artifact@v4
+        with:
+          name: Step1-Pure-K90U-6.6-AK3
+          path: Step1-Pure-K90U-6.6-AK3.zip
