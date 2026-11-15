@@ -102,12 +102,14 @@ jobs:
 
           ccache -s
 
-      - name: 9. 打包为纯 64 位 GKI AnyKernel3 刷机包 (精确锁定 K90U boot 分区)
+      - name: 9. 打包为纯 64 位 GKI 2.0 (Header v4) AnyKernel3 刷机包
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          # 使用专为 GKI 2.0 (Boot Header v4 无 ramdisk) 重写过 repack 逻辑的现代 AnyKernel3
+          git clone --depth=1 https://github.com/KernelSU-Next/AnyKernel3.git AnyKernel3 || \
+          git clone --depth=1 https://github.com/ShirkNeko/AnyKernel3.git AnyKernel3
           rm -rf AnyKernel3/.git
 
-          # 1. 替换为纯 64 位 (aarch64) 静态编译的 busybox
+          # 1. 替换为纯 64 位 (aarch64) 静态编译的 busybox (适配 K90U 纯 64 位硬件)
           wget -qO AnyKernel3/tools/busybox "https://github.com/EXALAB/Busybox-static/raw/main/busybox_arm64" || \
           wget -qO AnyKernel3/tools/busybox "https://github.com/Magisk-Modules-Repo/busybox-ndk/raw/master/busybox-arm64"
           chmod 755 AnyKernel3/tools/busybox
@@ -116,37 +118,11 @@ jobs:
           # 2. 放入编译好的纯净内核镜像
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/
 
-          # 3. 针对 GKI 2.0 纯内核 boot 分区重写 anykernel.sh (严格保持 YAML 10 空格缩进)
-          cat << 'EOF' > AnyKernel3/anykernel.sh
-          ### AnyKernel3 Ramdisk Mod Script
-          ## osm0sis @ xda-developers
-
-          properties() { '
-          kernel.string=K90U-Pure-6.6.118-android15-8
-          do.devicecheck=0
-          do.modules=0
-          do.systemless=0
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=warsaw
-          supported.versions=
-          supported.patchlevels=
-          '; }
-
-          BLOCK=/dev/block/by-name/boot;
-          IS_SLOT_DEVICE=1;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
-
-          . tools/ak3-core.sh;
-
-          # GKI 2.0 专用刷入流程：只拆分内核头与替换 Image，跳过 ramdisk 解包
-          split_boot;
-          flash_boot;
-          EOF
-
-          # 去掉写入后每行前面的 10 个前导空格，保持脚本整洁
-          sed -i 's/^          //' AnyKernel3/anykernel.sh
+          # 3. 精准锁定 boot 分区，关闭设备名校验
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's|BLOCK=auto;|BLOCK=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
+          sed -i 's|BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|BLOCK=/dev/block/by-name/boot;|g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=1;/g' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
           zip -r9 ../Step1-Pure-K90U-6.6-AK3.zip * -x .git README.md *placeholder
