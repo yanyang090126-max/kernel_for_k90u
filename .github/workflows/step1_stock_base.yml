@@ -23,7 +23,32 @@ jobs:
         with:
           path: repo_files
 
-      - name: 4. 挂载 ccache 编译缓存 (以后每次编译只需 3-5 分钟)
+      - name: 4. 缓存并准备 Google AOSP Clang 编译器 (clang-r510928)
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: clang
+          key: k90u-aosp-clang-r510928
+
+      - name: 4.1 下载 Clang (仅在首次无缓存时执行)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p clang
+          wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2024/clang-r510928.tar.gz | tar -xzf - -C clang
+
+      - name: 5. 缓存并拉取纯净 Google 官方 android15-6.6 源码
+        id: cache-kernel-src
+        uses: actions/cache@v4
+        with:
+          path: kernel
+          key: k90u-android15-6.6-pure-src-v1
+
+      - name: 5.1 克隆内核源码 (仅在首次无缓存时执行)
+        if: steps.cache-kernel-src.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 https://android.googlesource.com/kernel/common -b android15-6.6 kernel
+
+      - name: 6. 挂载 ccache 编译产物缓存 (实现 2-3 分钟极速增量编译)
         uses: actions/cache@v4
         with:
           path: ~/.ccache
@@ -31,24 +56,16 @@ jobs:
           restore-keys: |
             k90u-pure-ccache-
 
-      - name: 5. 拉取纯净的 Google 官方 android15-6.6 内核源码
-        run: |
-          git clone --depth=1 https://android.googlesource.com/kernel/common -b android15-6.6 kernel
-
-      - name: 6. 下载 Google 官方 AOSP Clang 编译器 (clang-r510928)
-        run: |
-          mkdir -p clang
-          wget -qO- https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel-build-2024/clang-r510928.tar.gz | tar -xzf - -C clang
-
       - name: 7. 导入原厂基因图谱并剥离本地私有路径依赖
         run: |
+          rm -rf kernel/out
           mkdir -p kernel/out
           cp repo_files/warsaw_stock.config kernel/out/.config
 
           cd kernel
           export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
 
-          # 1. 剥离原厂配置中指向本地私钥/证书/白名单的路径 (纯净源码树中不存在这些外部文件)
+          # 剥离原厂配置中指向本地私钥/证书/白名单的路径
           ./scripts/config --file out/.config \
             --set-str MODULE_SIG_KEY "" \
             --set-str SYSTEM_TRUSTED_KEYS "" \
@@ -59,15 +76,17 @@ jobs:
             -d WERROR \
             --set-str LOCALVERSION "-android15-8-g0908354dac1b-ab16143355-4k"
 
-          # 2. 让内核配置系统自动校准当前源码树的配置依赖
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-      - name: 8. 编译纯净内核镜像 (Image) 并捕获精准报错
+      - name: 8. 编译纯净内核镜像 (Image)
         working-directory: kernel
         run: |
           export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
           export CCACHE_DIR="${HOME}/.ccache"
-          ccache -M 5G
+          export CCACHE_COMPILERCHECK=none
+          export CCACHE_BASEDIR="${GITHUB_WORKSPACE}"
+          export CCACHE_SLOPPINESS="file_macro,locale,time_macros"
+          ccache -M 3.5G
           ccache -z
 
           touch .scmversion
@@ -82,29 +101,52 @@ jobs:
           fi
 
           ccache -s
-      - name: 9. 打包为纯 64 位 AnyKernel3 刷机包 (适配 K90U 纯 64 位硬件)
+
+      - name: 9. 打包为纯 64 位 GKI AnyKernel3 刷机包 (精确锁定 K90U boot 分区)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           rm -rf AnyKernel3/.git
 
-          # 直接从 BusyBox 官方及稳定镜像下载纯 64 位 (aarch64) 静态编译二进制文件
-          curl -fsSL "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox" -o /dev/null || true
+          # 1. 替换为纯 64 位 (aarch64) 静态编译的 busybox
           wget -qO AnyKernel3/tools/busybox "https://github.com/EXALAB/Busybox-static/raw/main/busybox_arm64" || \
           wget -qO AnyKernel3/tools/busybox "https://github.com/Magisk-Modules-Repo/busybox-ndk/raw/master/busybox-arm64"
           chmod 755 AnyKernel3/tools/busybox
-
-          # 验证确保 busybox 已经是 64-bit ARM aarch64
           file AnyKernel3/tools/busybox
 
+          # 2. 放入编译好的纯净内核镜像
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/
 
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-          sed -i 's|BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|BLOCK=auto;|g' AnyKernel3/anykernel.sh
-          sed -i 's/IS_SLOT_DEVICE=0;/IS_SLOT_DEVICE=1;/g' AnyKernel3/anykernel.sh
+          # 3. 针对 GKI 2.0 纯内核 boot 分区重写 anykernel.sh (彻底解决 init_boot No ramdisk 报错)
+          cat << 'EOF' > AnyKernel3/anykernel.sh
+### AnyKernel3 Ramdisk Mod Script
+## osm0sis @ xda-developers
+
+properties() { '
+kernel.string=K90U-Pure-6.6.118-android15-8
+do.devicecheck=0
+do.modules=0
+do.systemless=0
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=warsaw
+supported.versions=
+supported.patchlevels=
+'; }
+
+BLOCK=/dev/block/by-name/boot;
+IS_SLOT_DEVICE=1;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+
+. tools/ak3-core.sh;
+
+# GKI 2.0 专用刷入流程：只拆分内核头与替换 Image，跳过 ramdisk 解包
+split_boot;
+flash_boot;
+EOF
 
           cd AnyKernel3
           zip -r9 ../Step1-Pure-K90U-6.6-AK3.zip * -x .git README.md *placeholder
-
 
       - name: 10. 上传第 1 课成品包
         uses: actions/upload-artifact@v4
