@@ -116,34 +116,37 @@ jobs:
           # 2. 放入编译好的纯净内核镜像
           cp kernel/out/arch/arm64/boot/Image AnyKernel3/
 
-          # 3. 针对 GKI 2.0 纯内核 boot 分区重写 anykernel.sh (彻底解决 init_boot No ramdisk 报错)
+          # 3. 针对 GKI 2.0 纯内核 boot 分区重写 anykernel.sh (严格保持 YAML 10 空格缩进)
           cat << 'EOF' > AnyKernel3/anykernel.sh
-### AnyKernel3 Ramdisk Mod Script
-## osm0sis @ xda-developers
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
 
-properties() { '
-kernel.string=K90U-Pure-6.6.118-android15-8
-do.devicecheck=0
-do.modules=0
-do.systemless=0
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=warsaw
-supported.versions=
-supported.patchlevels=
-'; }
+          properties() { '
+          kernel.string=K90U-Pure-6.6.118-android15-8
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=warsaw
+          supported.versions=
+          supported.patchlevels=
+          '; }
 
-BLOCK=/dev/block/by-name/boot;
-IS_SLOT_DEVICE=1;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
+          BLOCK=/dev/block/by-name/boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
 
-. tools/ak3-core.sh;
+          . tools/ak3-core.sh;
 
-# GKI 2.0 专用刷入流程：只拆分内核头与替换 Image，跳过 ramdisk 解包
-split_boot;
-flash_boot;
-EOF
+          # GKI 2.0 专用刷入流程：只拆分内核头与替换 Image，跳过 ramdisk 解包
+          split_boot;
+          flash_boot;
+          EOF
+
+          # 去掉写入后每行前面的 10 个前导空格，保持脚本整洁
+          sed -i 's/^          //' AnyKernel3/anykernel.sh
 
           cd AnyKernel3
           zip -r9 ../Step1-Pure-K90U-6.6-AK3.zip * -x .git README.md *placeholder
